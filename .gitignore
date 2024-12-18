@@ -1,0 +1,233 @@
+from googleapiclient.discovery import build
+from google.auth.transport.requests import Request
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.oauth2.credentials import Credentials
+import os
+import pandas as pd
+import pycountry
+from datetime import datetime
+    
+
+# Define the API scopes
+SCOPES = ['https://www.googleapis.com/auth/youtube.readonly']
+
+# Define a mapping for YouTube Category IDs to human-readable names
+CATEGORY_ID_MAP = {
+    '1': 'Film & Animation',
+    '2': 'Autos & Vehicles',
+    '10': 'Music',
+    '15': 'Pets & Animals',
+    '17': 'Sports',
+    '18': 'Short Movies',
+    '19': 'Travel & Events',
+    '20': 'Gaming',
+    '21': 'Video Blogging',
+    '22': 'People & Blogs',
+    '23': 'Comedy',
+    '24': 'Entertainment',
+    '25': 'News & Politics',
+    '26': 'How-to & Style',
+    '27': 'Education',
+    '28': 'Science & Technology',
+    '29': 'Nonprofits & Activism',
+    '30': 'Movies',
+    '31': 'Anime/Animation',
+    '32': 'Action/Adventure',
+    '33': 'Classics',
+    '34': 'Documentary',
+    '35': 'Drama',
+    '36': 'Family',
+    '37': 'Foreign',
+    '38': 'Horror',
+    '39': 'Sci-Fi/Fantasy',
+    '40': 'Thriller',
+    '41': 'Shorts',
+}
+
+
+# Authenticate and build the YouTube API client
+def authenticate_youtube():
+    creds = None
+    if os.path.exists('token.json'):
+        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                'client_secret_1010272189872-4cjblcsq1rql6sr49jutf5dh2q5p9q85.apps.googleusercontent.com.json',
+                SCOPES
+            )
+            creds = flow.run_local_server(port=0)
+        with open('token.json', 'w') as token:
+            token.write(creds.to_json())
+    return build('youtube', 'v3', credentials=creds)
+
+
+# Helper function to get the full country name
+def get_full_country_name(country_code):
+    """
+    Converts a country code (like 'US') to its full name using pycountry.
+    If the code is invalid or not provided, return 'Unknown'.
+    """
+    try:
+        if country_code and len(country_code) == 2:  # Ensure it's a valid ISO Alpha-2 country code
+            country = pycountry.countries.get(alpha_2=country_code)
+            return country.name if country else 'Unknown'
+        return 'Unknown'
+    except Exception:
+        return 'Unknown'
+
+
+# Helper to parse date and return day name + formatted date
+def parse_date_and_format(date_str):
+    """
+    Parses a date string in ISO 8601 format and returns the day name, date, and year.
+    Example: "2022-12-15T13:45:00Z" -> "Thursday, December 15, 2022"
+    """
+    try:
+        date_obj = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+        return date_obj.strftime("%A, %B %d, %Y")
+    except Exception:
+        return "Unknown Date"
+
+
+# Fetch liked videos with statistics
+def get_liked_videos_with_details(youtube):
+    liked_videos = []
+    next_page_token = None
+
+    while True:
+        videos_request = youtube.videos().list(
+            part='snippet,statistics',
+            myRating='like',
+            maxResults=50,
+            pageToken=next_page_token
+        )
+        videos_response = videos_request.execute()
+
+        for video in videos_response['items']:
+            video_id = video['id']
+            video_title = video['snippet']['title']
+            channel_id = video['snippet']['channelId']
+            channel_name = video['snippet']['channelTitle']
+            category_id = video['snippet'].get('categoryId', 'Unknown')
+            category_name = CATEGORY_ID_MAP.get(category_id, 'Unknown')
+            like_count = video['statistics'].get('likeCount', 'N/A')
+            comment_count = video['statistics'].get('commentCount', 0)
+            thumbnail_url = video['snippet']['thumbnails']['high']['url']
+            published_at = parse_date_and_format(video['snippet']['publishedAt'])
+
+            liked_videos.append({
+                'video_id': video_id,
+                'video_title': video_title,
+                'channel_id': channel_id,
+                'channel_name': channel_name,
+                'category_id': category_id,
+                'category_name': category_name,
+                'like_count': like_count,
+                'comment_count': comment_count,
+                'thumbnail_url': thumbnail_url,
+                'published_date': published_at,
+            })
+
+        next_page_token = videos_response.get('nextPageToken')
+        if not next_page_token:
+            break
+
+    return liked_videos
+
+
+# Fetch all subscribed channels
+def get_all_subscribed_channels(youtube):
+    """
+    Fetch all subscribed channels of the authenticated user.
+    """
+    subscribed_channels = []
+    next_page_token = None
+
+    while True:
+        subscriptions_request = youtube.subscriptions().list(
+            part='snippet',
+            mine=True,
+            maxResults=50,
+            pageToken=next_page_token
+        )
+        subscriptions_response = subscriptions_request.execute()
+
+        for subscription in subscriptions_response['items']:
+            channel_id = subscription['snippet']['resourceId']['channelId']
+            subscribed_channels.append({
+                'channel_id': channel_id,
+                'channel_name': subscription['snippet']['title']
+            })
+
+        next_page_token = subscriptions_response.get('nextPageToken')
+        if not next_page_token:
+            break
+
+    return subscribed_channels
+
+
+# Fetch statistics and country for multiple channels
+def get_channel_statistics_with_country(youtube, channel_ids):
+    channels_stats = []
+    batch_size = 50
+
+    for i in range(0, len(channel_ids), batch_size):
+        batch_ids = channel_ids[i:i+batch_size]
+        channels_request = youtube.channels().list(
+            part='snippet,statistics',
+            id=','.join(batch_ids)
+        )
+        channels_response = channels_request.execute()
+
+        for channel in channels_response['items']:
+            country_code = channel['snippet'].get('country', 'Unknown')
+            country_name = get_full_country_name(country_code)
+            published_at = parse_date_and_format(channel['snippet']['publishedAt'])
+
+            stats = {
+                'channel_id': channel['id'],
+                'channel_name': channel['snippet']['title'],
+                'country': country_name,
+                'watch_time': channel['statistics'].get('viewCount', 'N/A'),
+                'subscribers': channel['statistics'].get('subscriberCount', 'N/A'),
+                'video_count': channel['statistics'].get('videoCount', 'N/A'),
+                'banner_url': channel['snippet'].get('thumbnails', {}).get('high', {}).get('url', 'No Banner'),
+                'channel_creation_date': published_a
+            }
+            channels_stats.append(stats)
+
+    return channels_stats
+
+
+# Main function
+def main():
+    youtube = authenticate_youtube()
+
+    # Fetch liked videos with details
+    liked_videos_data = get_liked_videos_with_details(youtube)
+
+    # Fetch all subscribed channels
+    subscribed_channels = get_all_subscribed_channels(youtube)
+    subscribed_channel_ids = [channel['channel_id'] for channel in subscribed_channels]
+
+    # Fetch statistics and full country names
+    channel_stats = get_channel_statistics_with_country(youtube, subscribed_channel_ids)
+
+    # Convert data to DataFrame
+    liked_videos_df = pd.DataFrame(liked_videos_data)
+    channel_stats_df = pd.DataFrame(channel_stats)
+
+    # Export data to CSV
+    liked_videos_df.to_csv('Rakesh_liked_videos_with_details.csv', index=False)
+    channel_stats_df.to_csv('Rakesh_subscribed_channels_with_country.csv', index=False)
+
+    print("\nData exported to:")
+    print("1. 'liked_videos_with_details.csv'")
+    print("2. 'subscribed_channels_with_country.csv'")
+
+
+if __name__ == "__main__":
+    main()
